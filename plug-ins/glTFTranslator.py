@@ -3,38 +3,50 @@ import sys
 import maya.OpenMayaMPx as OpenMayaMPx
 import glTFExport
 
+# Reload associated Python script whenever reloading the plug-in
+# For development only, but won't hurt usage.
+import importlib
+importlib.reload(glTFExport)
 
 PLUGIN_NAME = "glTF Export"
 PLUGIN_COMPANY = "Matias Codesal"
-FILE_EXT = 'glb'
+GLB = 'glb'
+GLTF = 'gltf'
 
 # Node definition
 class GLTFTranslator(OpenMayaMPx.MPxFileTranslator):
     def __init__(self):
         OpenMayaMPx.MPxFileTranslator.__init__(self)
         self.kwargs = {}
+
     def haveWriteMethod(self):
         return True
+
     def haveReadMethod(self):
         return False
+
     def filter(self):
-        return "*.{}".format(FILE_EXT)
+        return "*.{} *.{}".format(GLB, GLTF)
+
     def defaultExtension(self):
-        return FILE_EXT
-    def writer( self, file_obj, opt_string, access_mode ): 
+        return GLB
+
+    def writer( self, file_obj, opt_string, access_mode ):
         fullName = file_obj.fullName()
         try:
+            self._parse_args(opt_string)
+
             if access_mode == OpenMayaMPx.MPxFileTranslator.kExportAccessMode:
-                self._parse_args(opt_string)
+                print("Translator says Selection=False")
                 glTFExport.export(file_obj.fullName(), **self.kwargs)
             elif access_mode == OpenMayaMPx.MPxFileTranslator.kExportActiveAccessMode:
-                self._parse_args(opt_string)
-                raise NotImplementedError("Exported Selection not implemented yet.  Use Export All.")
-                #export_selected(file_obj.fullName(), **self.kwargs)
+                print("Translator says Selection=True")
+                glTFExport.export(file_obj.fullName(), selection=True, **self.kwargs)
+
         except:
             sys.stderr.write( "Failed to write file information\n")
             raise
-    
+
     def _parse_args(self, opt_string):
         # TODO: why does opt_string have default values and current values in it?
         opts = opt_string.split(';')
@@ -58,8 +70,8 @@ class GLTFTranslator(OpenMayaMPx.MPxFileTranslator):
                         self.kwargs['vflip'] = False
                     else:
                         raise ValueError("vFlip option is not valid: {}".format(value))
-                
-    
+
+
     def reader( self, fileObject, optionString, accessMode ):
         raise NotImplementedError()
 
@@ -67,9 +79,9 @@ class GLTFTranslator(OpenMayaMPx.MPxFileTranslator):
         basename, ext = os.path.splitext(file_obj.fullName())
         if ext not in ['.glb', '.gltf']:
             return OpenMayaMPx.MPxFileTranslator.kNotMyFileType
-        
+
         return OpenMayaMPx.MPxFileTranslator.kIsMyFileType
-        
+
 
 # creator
 def translator_creator():

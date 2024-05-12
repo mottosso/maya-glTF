@@ -1,17 +1,19 @@
 from __future__ import print_function
 from __future__ import absolute_import
 from __future__ import division
-import json
-import struct
+
 import os
 import sys
-import base64
 import math
-import shutil
 import time
+import json
+import struct
+import shutil
+import base64
 
 import maya.cmds
 import maya.OpenMaya as OpenMaya
+
 try:
     from PySide.QtGui import QImage, QColor, qRed, qGreen, qBlue, QImageWriter
     from PySide.QtCore import QByteArray
@@ -21,8 +23,8 @@ except ImportError:
 
 # TODO don't export hidden nodes?
 
-def timeit(method):
 
+def timeit(method):
     def timed(*args, **kw):
         ts = time.time()
         result = method(*args, **kw)
@@ -34,18 +36,20 @@ def timeit(method):
 
     return timed
 
+
 class ResourceFormats(object):
     EMBEDDED = 'embedded'
     SOURCE = 'source'
     BIN = 'bin'
+
 
 class AnimOptions(object):
     NONE = 'none'
     KEYED = 'keyed'
     BAKED = 'baked'
 
-class ClassPropertyDescriptor(object):
 
+class ClassPropertyDescriptor(object):
     def __init__(self, fget):
         self.fget = fget
 
@@ -57,20 +61,23 @@ class ClassPropertyDescriptor(object):
     def __set__(self, obj, value):
         raise AttributeError("can't set attribute")
 
+
 def classproperty(func):
     if not isinstance(func, (classmethod, staticmethod)):
         func = classmethod(func)
     return ClassPropertyDescriptor(func)
-        
+
+
 class ExportSettings(object):
     file_format = 'gltf'
     resource_format = 'bin'
     anim = 'keyed'
     vflip=True
     out_file = ''
+    selection = False
     _out_dir = ''
     _out_basename = ''
-    
+
     @classmethod
     def set_defaults(cls):
         cls.file_format = 'glb'
@@ -78,30 +85,31 @@ class ExportSettings(object):
         cls.anim = 'keyed'
         cls.vflip=True
         cls.out_file = ''
-    
+        cls.selection = False
+
     @classproperty
     def out_bin(cls):
         return cls.out_basename + '.bin'
-    
-    @classproperty    
+
+    @classproperty
     def out_basename(cls):
         base, ext = os.path.splitext(cls.out_file)
         cls._out_basename = os.path.basename(base)
         return cls._out_basename
-        
+
     @classproperty
     def out_dir(cls):
         cls._out_dir = os.path.dirname(cls.out_file)
         return cls._out_dir
-    
-    
+
+
 class GLTFExporter(object):
     # TODO: Add VFlip option
-    def __init__(self, file_path, resource_format='bin', anim='keyed', vflip=True):
+    def __init__(self, file_path, resource_format='bin', anim='keyed', vflip=True, selection=False):
         self.output = {
-            "asset": { 
-                "version": "2.0", 
-                "generator": "maya-glTFExport", 
+            "asset": {
+                "version": "2.0",
+                "generator": "maya-glTFExport",
             }
         }
         ExportSettings.set_defaults()
@@ -116,27 +124,36 @@ class GLTFExporter(object):
         Buffer.set_defaults()
         BufferView.set_defaults()
         Accessor.set_defaults()
-        
+
         ExportSettings.out_file = file_path
         ExportSettings.resource_format = resource_format
         ExportSettings.anim = anim
         ExportSettings.vflip = vflip
-        
+        ExportSettings.selection = selection
+
     def run(self):
         if not ExportSettings.out_file:
-            ExportSettings.out_file = maya.cmds.fileDialog2(caption="Specify a name for the file to export.",
-                                                        fileMode=0)[0]
+            ExportSettings.out_file = maya.cmds.fileDialog2(
+                caption="Specify a name for the file to export.",
+                fileMode=0
+            )[0]
+
         basename, ext = os.path.splitext(ExportSettings.out_file)
         if not ext in ['.glb', '.gltf']:
             raise Exception("Output file must have gltf or glb extension.")
-        ExportSettings.file_format = ext[1:]  
-        
+        ExportSettings.file_format = ext[1:]
+
         if not os.path.exists(ExportSettings.out_dir):
             os.makedirs(ExportSettings.out_dir)
-        
+
         # TODO: validate file_path and type
-        scene = Scene()
-        # we only support exporting single scenes, 
+        maya_nodes = []
+        if ExportSettings.selection:
+            print("Using selection..")
+            maya_nodes = maya.cmds.ls(selection=True)
+
+        scene = Scene(maya_nodes=maya_nodes)
+        # we only support exporting single scenes,
         # so the first scene is the active scene
         self.output['scene'] = 0
         if Scene.instances:
@@ -161,11 +178,11 @@ class GLTFExporter(object):
             self.output['bufferViews'] = BufferView.instances
         if Accessor.instances:
             self.output['accessors'] = Accessor.instances
-        
+
         if not Scene.instances[0].nodes:
             raise RuntimeError('Scene is empty.  No file will be exported.')
         if ExportSettings.file_format == 'glb':
-            
+
             json_str = json.dumps(self.output, sort_keys=True, separators=(',', ':'), cls=GLTFEncoder)
             json_bin = bytearray(json_str.encode(encoding='latin-1'))
             # 4-byte-aligned
@@ -185,68 +202,85 @@ class GLTFExporter(object):
             bin_out.extend(struct.pack('<I', len(json_bin)))
             bin_out.extend(struct.pack('<I', 0x4E4F534A)) # JSON in binary
             bin_out += json_bin
-            
+
             if Buffer.instances:
-                bin_out.extend(struct.pack('<I', len(buffer))) 
+                bin_out.extend(struct.pack('<I', len(buffer)))
                 bin_out.extend(struct.pack('<I', 0x004E4942)) # BIN in binary
                 bin_out += buffer.byte_str
-            
+
             with open(ExportSettings.out_file, 'wb') as outfile:
                 outfile.write(bin_out)
         else:
             with open(ExportSettings.out_file, 'w') as outfile:
                 json.dump(self.output, outfile, cls=GLTFEncoder)
-            
+
             if (ExportSettings.resource_format == ResourceFormats.BIN
                     and Buffer.instances):
                 buffer = Buffer.instances[0]
                 with open(ExportSettings.out_dir + "/" + buffer.uri, 'wb') as outfile:
                     outfile.write(buffer.byte_str)
-        
+
 def export(file_path=None, resource_format='bin', anim='keyed', vflip=True, selection=False):
-    GLTFExporter(file_path, resource_format, anim, vflip).run()
-    
-        
+    exporter = GLTFExporter(file_path, resource_format, anim, vflip, selection=selection)
+
+    selection = maya.cmds.ls(selection=True)
+
+    try:
+        return exporter.run()
+    finally:
+        maya.cmds.select(selection)
+
+
 class GLTFEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, ExportItem):
             return obj.to_json()
         # Let the base class default method raise the TypeError
         return json.JSONEncoder.default(self, obj)
-   
+
+
 class ExportItem(object):
     def __init__(self, name=None):
         self.name = name
-    
-    
+
+
 class Scene(ExportItem):
     '''Needs to add itself to scenes'''
     instances = []
     maya_nodes = None
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, name="defaultScene", maya_nodes=None):
         super(Scene, self).__init__(name=name)
+
         self.index = len(Scene.instances)
+        self.nodes = []
+
         Scene.instances.append(self)
         anim = None
         if not ExportSettings.anim == AnimOptions.NONE:
             anim = Animation('defaultAnimation')
-        self.nodes = []
-        if maya_nodes:
-            self.maya_nodes = maya_nodes
-        else:
-            self.maya_nodes = maya.cmds.ls(assemblies=True, long=True)
-        for transform in self.maya_nodes:
+
+        if not maya_nodes:
+            # Exporting all assemblies
+            maya_nodes = maya.cmds.ls(assemblies=True, long=True)
+
+        print("Using %s" % maya_nodes)
+
+        for transform in maya_nodes:
             if transform not in Camera.default_cameras:
                 self.nodes.append(Node(transform, anim))
-        
+
     def to_json(self):
-        scene_def = {"name":self.name, "nodes":[node.index for node in self.nodes]}
-        return scene_def
+        return {
+            "name": self.name,
+            "nodes": [
+                node.index for node in self.nodes
+            ]
+        }
 
 
 class Node(ExportItem):
@@ -259,11 +293,11 @@ class Node(ExportItem):
     scale = None
     camera = None
     mesh = None
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, maya_node, anim=None):
         self.maya_node = maya_node
         name = maya.cmds.ls(maya_node, shortNames=True)[0]
@@ -282,7 +316,7 @@ class Node(ExportItem):
                 childType = maya.cmds.objectType(child)
                 if childType == 'mesh' and not maya.cmds.getAttr(child + ".intermediateObject"):
                     mesh = Mesh(child)
-                    self.mesh = mesh 
+                    self.mesh = mesh
                 elif childType == 'camera':
                     if maya.cmds.camera(child, query=True, orthographic=True):
                         cam = OrthographicCamera(child)
@@ -292,7 +326,7 @@ class Node(ExportItem):
                 elif childType == 'transform':
                     node = Node(child, anim)
                     self.children.append(node)
-    
+
     def _get_animation(self, anim):
         if maya.cmds.keyframe(self.maya_node, attribute='translate', query=True, keyframeCount=True):
             translation_channel = AnimationChannel(self, 'translation')
@@ -306,7 +340,7 @@ class Node(ExportItem):
             scale_channel = AnimationChannel(self, 'scale')
             anim.add_channel(scale_channel)
             anim.add_sampler(scale_channel.sampler)
-        
+
     def _get_rotation_quaternion(self):
         obj=OpenMaya.MObject()
         #make a object of type MSelectionList
@@ -325,12 +359,15 @@ class Node(ExportItem):
             xform.getRotation(quat)
             # glTF requires normalize quat
             quat.normalizeIt()
-        
+
         py_quat = [quat[x] for x in range(4)]
-        return py_quat       
-    
+        return py_quat
+
     def to_json(self):
-        node_def = {}
+        node_def = {
+            "name": self.maya_node
+        }
+
         if self.matrix:
             node_def['matrix'] = self.matrix
         if self.translation:
@@ -346,8 +383,8 @@ class Node(ExportItem):
         if self.camera:
             node_def['camera'] = self.camera.index
         return node_def
-                     
-        
+
+
 class Mesh(ExportItem):
     '''Needs to add itself to node and its accesors to meshes list'''
     instances = []
@@ -357,21 +394,21 @@ class Mesh(ExportItem):
     position_accessor = None
     normal_accessor = None
     texcoord0_accessor = None
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, maya_node):
         self.maya_node = maya_node
         name = maya.cmds.ls(maya_node, shortNames=True)[0]
         super(Mesh, self).__init__(name=name)
         self.index = len(Mesh.instances)
         Mesh.instances.append(self)
-        
+
         self._getMeshData()
         self._getMaterial()
-        
+
     def to_json(self):
         mesh_def = {"primitives" : [ {
                         "mode": 4,
@@ -385,14 +422,14 @@ class Mesh(ExportItem):
                       } ]
                     }
         return mesh_def
-                    
+
     def _getMaterial(self):
         shadingGrps = maya.cmds.listConnections(self.maya_node,type='shadingEngine')
         # We currently only support one materical per mesh, so we'll just grab the first one.
         # TODO: support facegroups as glTF primitivies to support one material per facegroup
         shader = maya.cmds.ls(maya.cmds.listConnections(shadingGrps),materials=True)[0]
         self.material = Material(shader)
-    
+
     @timeit
     def _getMeshData(self):
         maya.cmds.select(self.maya_node)
@@ -425,7 +462,7 @@ class Mesh(ExportItem):
         uv_util.createFromList([0,0], 2 )
         uv_ptr = uv_util.asFloat2Ptr()
         while not meshIt.isDone():
-            meshIt.getTriangles(points, ids)  
+            meshIt.getTriangles(points, ids)
             meshIt.getVertices(face_verts)
             face_vertices = list(face_verts)
             for point, vertex_index in zip(points, ids):
@@ -444,7 +481,7 @@ class Mesh(ExportItem):
                 if ExportSettings.vflip:
                     v = int(v) + (1 - (v % 1))
                 uv = (u, v)
-                if not positions[vertex_index]:   
+                if not positions[vertex_index]:
                     positions[vertex_index] = pos
                     normals[vertex_index] = norm
                     uvs[vertex_index] = uv
@@ -455,18 +492,18 @@ class Mesh(ExportItem):
                     normals.append(norm)
                     uvs.append(uv)
                     indices[-1] = len(positions)-1
-                        
-                
+
+
                 if do_color:
                     color = vertexColorList[vertex_index]
-                    colors[vertex_index] = (color.r, color.g, color.b)   
+                    colors[vertex_index] = (color.r, color.g, color.b)
             next(meshIt)
 
         if not len(Buffer.instances):
             primary_buffer = Buffer('primary_buffer')
         else:
             primary_buffer = Buffer.instances[0]
-        
+
         if len(positions) >= 0xffff:
             idx_component_type = ComponentTypes.UINT
         else:
@@ -482,7 +519,7 @@ class Mesh(ExportItem):
         self.normal_accessor = Accessor(normals, "VEC3", ComponentTypes.FLOAT, 34962, primary_buffer, name=self.name + '_norm')
         self.texcoord0_accessor = Accessor(uvs, "VEC2", ComponentTypes.FLOAT, 34962, primary_buffer, name=self.name + '_uv')
 
-        
+
 
 class Material(ExportItem):
     '''Needs to add itself to materials and meshes list'''
@@ -500,30 +537,30 @@ class Material(ExportItem):
     transparency = None
     default_material_id = None
     supported_materials = ['lambert','phong','blinn','aiStandardSurface', 'StingrayPBS']
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
         cls.default_material_id = None
-    
+
     def __new__(cls, maya_node, *args, **kwargs):
         if maya_node:
             name = maya.cmds.ls(maya_node, shortNames=True)[0]
             matches = [mat for mat in Material.instances if mat.name == name]
             if matches:
                 return matches[0]
-            
+
             maya_obj_type = maya.cmds.objectType(maya_node)
             if maya_obj_type not in cls.supported_materials:
                 print("Shader {} is not a supported shader type: {}".format(maya_node, maya_obj_type))
                 return cls._get_default_material()
-        
+
         return super(Material, cls).__new__(cls, *args, **kwargs)
-        
+
     def __init__(self, maya_node):
         if hasattr(self, 'index'):
             return
-        
+
         if maya_node is None:
             self.base_color_factor = [0.5, 0.5, 0.5, 1]
             self.metallic_factor = 0
@@ -534,14 +571,14 @@ class Material(ExportItem):
             self.__class__.default_material_id = self.index
             Material.instances.append(self)
             return
-             
+
         self.maya_node = maya_node
         name = maya.cmds.ls(maya_node, shortNames=True)[0]
         super(Material, self).__init__(name=name)
-        
+
         self.index = len(Material.instances)
         Material.instances.append(self)
-        
+
         maya_obj_type = maya.cmds.objectType(maya_node)
         if maya_obj_type in ['phong', 'lambert', 'blinn']:
             color_conn = maya.cmds.listConnections(self.maya_node+'.color')
@@ -556,13 +593,13 @@ class Material(ExportItem):
                 color = list(maya.cmds.getAttr(self.maya_node+'.color')[0])
                 color.append(1-self.transparency)
                 self.base_color_factor = color
-            
+
             if maya_obj_type == 'lambert':
                 self.metallic_factor = 0
                 self.roughness_factor = 1
             elif maya_obj_type == 'blinn':
                 self.metallic_factor = maya.cmds.getAttr(self.maya_node+'.specularRollOff')
-                self.roughness_factor = maya.cmds.getAttr(self.maya_node+'.eccentricity') 
+                self.roughness_factor = maya.cmds.getAttr(self.maya_node+'.eccentricity')
             elif maya_obj_type == 'phong':
                 self.metallic_factor = 1
                 self.roughness_factor = 1 - min(1, maya.cmds.getAttr(self.maya_node+'.cosinePower') / 2000)
@@ -593,7 +630,7 @@ class Material(ExportItem):
                 color = list(maya.cmds.getAttr(self.maya_node+'.base_color')[0])
                 self.base_color_factor = color
                 self.base_color_factor.append(1) # opacity
-            
+
             metallic_conn = maya.cmds.listConnections(self.maya_node+'.TEX_metallic_map')
             roughness_conn = maya.cmds.listConnections(self.maya_node+'.TEX_roughness_map')
             if (metallic_conn and maya.cmds.objectType(metallic_conn[0]) == 'file'
@@ -610,7 +647,7 @@ class Material(ExportItem):
             else:
                 self.metallic_factor = maya.cmds.getAttr(self.maya_node+'.metallic')
                 self.roughness_factor = maya.cmds.getAttr(self.maya_node+'.roughness')
-                
+
             normal_conn = maya.cmds.listConnections(self.maya_node+'.TEX_normal_map')
             if (normal_conn and maya.cmds.objectType(normal_conn[0]) == 'file'
                     and maya.cmds.getAttr(self.maya_node+'.use_normal_map')):
@@ -618,9 +655,9 @@ class Material(ExportItem):
                 file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
                 image = Image(file_path)
                 self.normal_texture = Texture(image)
-            
+
             # Not all Stingray preset shaders have an AO map attribute
-            if maya.cmds.attributeQuery("TEX_ao_map", node=self.maya_node, exists=True):    
+            if maya.cmds.attributeQuery("TEX_ao_map", node=self.maya_node, exists=True):
                 ao_conn = maya.cmds.listConnections(self.maya_node+'.TEX_ao_map')
                 if (ao_conn and maya.cmds.objectType(ao_conn[0]) == 'file'
                         and maya.cmds.getAttr(self.maya_node+'.use_ao_map')):
@@ -628,7 +665,7 @@ class Material(ExportItem):
                     file_path = maya.cmds.getAttr(file_node+'.fileTextureName')
                     image = Image(file_path)
                     self.occlusion_texture = Texture(image)
-            
+
             emissive_conn = maya.cmds.listConnections(self.maya_node+'.TEX_emissive_map')
             if (emissive_conn and maya.cmds.objectType(emissive_conn[0]) == 'file'
                     and maya.cmds.getAttr(self.maya_node+'.use_emissive_map')):
@@ -641,9 +678,9 @@ class Material(ExportItem):
             else:
                 emissive = list(maya.cmds.getAttr(self.maya_node+'.emissive')[0])
                 self.emissive_factor = emissive
-                
-            
-    
+
+
+
     def _create_metallic_roughness_map(self, metal_map, rough_map):
 
         metal = QImage(metal_map)
@@ -668,17 +705,17 @@ class Material(ExportItem):
                 metal_pixel.setRgb(0, qGreen(rough_color), qBlue(metal_color))
                 metal_uchar_ptr[i:i+4] = struct.pack('I', metal_pixel.rgb())
                 i+=4
-                
+
         output = ExportSettings.out_dir + "/"+self.name+"_metalRough.jpg"
         return output, metal
-    
+
     @classmethod
     def _get_default_material(cls):
         if cls.default_material_id:
             return Material.instances[cls.default_material_id]
         else:
             return Material(None)
-    
+
     def to_json(self):
         pbr = {}
         # TODO: Potentially add alphaMode=OPAQUE for textured materials that don't have
@@ -698,7 +735,7 @@ class Material(ExportItem):
                 mat_def['alphaMode'] = 'BLEND'
             else:
                 mat_def['alphaMode'] = 'OPAQUE'
-        
+
         if self.metallic_roughness_texture:
             pbr['metallicRoughnessTexture'] = {'index':self.metallic_roughness_texture.index}
         else:
@@ -712,7 +749,7 @@ class Material(ExportItem):
             mat_def['emissiveTexture'] = {'index':self.emissive_texture.index}
         if self.emissive_factor:
             mat_def['emissiveFactor'] = self.emissive_factor
-        
+
         return mat_def
 
 
@@ -724,11 +761,11 @@ class Camera(ExportItem):
     type_ = None
     znear = 0.1
     zfar = 1000
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, maya_node):
         self.maya_node = maya_node
         name = maya.cmds.ls(maya_node, shortNames=True)[0]
@@ -736,8 +773,8 @@ class Camera(ExportItem):
         self.index = len(Camera.instances)
         self.znear = maya.cmds.camera(self.maya_node, query=True, nearClipPlane=True)
         self.zfar = maya.cmds.camera(self.maya_node, query=True, farClipPlane=True)
-        
-        
+
+
     def to_json(self):
         if not self.type_:
             # TODO: use custom error or ensure type is set
@@ -746,75 +783,75 @@ class Camera(ExportItem):
         camera_def[self.type_] = {'znear' : self.znear,
                                     'zfar' : self.zfar}
         return camera_def
- 
-    
+
+
 class PerspectiveCamera(Camera):
     type_= 'perspective'
-    
+
     def __init__(self, maya_node):
         super(PerspectiveCamera, self).__init__(maya_node)
         self.aspect_ratio = maya.cmds.camera(self.maya_node, query=True, aspectRatio=True)
         self.yfov = math.radians(maya.cmds.camera(self.maya_node, query=True, verticalFieldOfView=True))
         Camera.instances.append(self)
-        
+
     def to_json(self):
         camera_def = super(PerspectiveCamera, self).to_json()
         camera_def[self.type_]['aspectRatio'] = self.aspect_ratio
         camera_def[self.type_]['yfov'] = self.yfov
         return camera_def
-    
+
 class OrthographicCamera(Camera):
     type_= 'orthographic'
     xmag = 1.0
     ymag = 1.0
-    
+
     def __init__(self, maya_node):
         super(OrthographicCamera, self).__init__(maya_node)
         self.xmag = maya.cmds.camera(self.maya_node, query=True, orthographicWidth=True)
         self.ymag = self.xmag
         Camera.instances.append(self)
-    
+
     def to_json(self):
         camera_def = super(OrthographicCamera, self).to_json()
         camera_def[self.type_]['xmag'] = self.xmag
         camera_def[self.type_]['ymag'] = self.ymag
         return camera_def
-    
-    
+
+
 class Animation(ExportItem):
     instances = []
     channels = None
     samplers = None
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, name=''):
         super(Animation, self).__init__(name)
         self.instances.append(self)
         self.channels = []
         self.samplers = []
-    
+
     def add_channel(self, channel):
         channel.index = len(self.channels)
         self.channels.append(channel)
-    
+
     def add_sampler(self, sampler):
         sampler.index = len(self.samplers)
         self.samplers.append(sampler)
-        
+
     def to_json(self):
         anim_def = {'channels': self.channels, 'samplers': self.samplers}
         return anim_def
-        
-    
+
+
 class AnimationChannel(ExportItem):
     maya_node = None
     node = None
     path = None
     sampler = None
-    
+
     def __init__(self, node, path):
         self.maya_node = node.maya_node
         self.node = node
@@ -823,14 +860,14 @@ class AnimationChannel(ExportItem):
         name = '{}_{}_channel'.format(name, path)
         super(AnimationChannel, self).__init__(name)
         self.sampler = AnimationSampler(self)
-            
-    
+
+
     def to_json(self):
         channel_def = {'target':{}, 'sampler': self.sampler.index}
         channel_def['target']['node'] = self.node.index
         channel_def['target']['path'] = self.path
         return channel_def
-        
+
 
 class AnimationSampler(ExportItem):
     input_accessor = None
@@ -843,17 +880,17 @@ class AnimationSampler(ExportItem):
                     'stepnext':'STEP','fixed':'CUBICSPLINE',
                     'clamped':'CUBICSPLINE', 'plateau':'CUBICSPLINE'}
     time_map = {'game':15.0,'film':24.0,'pal':25.0,'ntsc':30.0,'show':48.0,'palf':50.0,'ntscf':60.0}
-    
+
     def __init__(self, anim_channel):
         node = anim_channel.node
         path = anim_channel.path
         name = '{}_{}_sampler'.format(node, path)
         super(AnimationSampler, self).__init__(name)
-        
+
         keyframes = maya.cmds.keyframe(node.maya_node, attribute=self.attr_map[path], query=True, timeChange=True)
         keyframes = sorted(list(set(keyframes)))
         self.interpolation = self._get_interpolation(node.maya_node, path, keyframes[0])
-        
+
         values = []
         if path in ['translation', 'scale']:
             for keyframe in keyframes:
@@ -877,20 +914,20 @@ class AnimationSampler(ExportItem):
             self.output_accessor = Accessor(values, "VEC3", ComponentTypes.FLOAT, None, primary_buffer, name=self.name + '_tVal')
         else:
             self.output_accessor = Accessor(values, "VEC4", ComponentTypes.FLOAT, None, primary_buffer, name=self.name + '_tVal')
-        
+
     def _get_interpolation(self, node, path, first_key):
-        for axis in ['X','Y','Z']:   
+        for axis in ['X','Y','Z']:
             out_tangent = maya.cmds.keyTangent(node, attribute=self.attr_map[path]+axis, time=(first_key,first_key), query=True, outTangentType=True)
             if out_tangent:
                 return self.interp_map[out_tangent[0]]
-            
+
     def to_json(self):
-        sampler_def = {'input':self.input_accessor.index, 
+        sampler_def = {'input':self.input_accessor.index,
                         'output':self.output_accessor.index,
                         'interpolation':self.interpolation}
         return sampler_def
-        
-    
+
+
 # TODO: check to see if the image has been used
 class Image(ExportItem):
     '''Needs to be added to images list and it's texture'''
@@ -900,11 +937,11 @@ class Image(ExportItem):
     buffer_view = None
     mime_type = None
     src_file_path = ""
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, file_path, qimage=None):
         file_name = os.path.basename(file_path)
         self.src_file_path = file_path
@@ -916,7 +953,7 @@ class Image(ExportItem):
         if mime_suffix == 'jpg':
             mime_suffix = 'jpeg'
         self.mime_type = 'image/{}'.format(mime_suffix)
-        
+
         # Need to write this out temporarily or permanently
         # depending on resource_format
         if qimage:
@@ -924,7 +961,7 @@ class Image(ExportItem):
                 writer.write(qimage);
                 # delete the write to close file handle
                 del writer
-                
+
         if ExportSettings.resource_format == ResourceFormats.SOURCE:
             if not qimage:
                 shutil.copy(file_path, ExportSettings.out_dir)
@@ -932,27 +969,27 @@ class Image(ExportItem):
         else:
             with open(file_path, 'rb') as f:
                 img_bytes = f.read()
-            
+
             # Remove the temp qimage because resource_format isn't source
             if qimage:
                 os.remove(file_path)
-            
+
             if (ExportSettings.resource_format == ResourceFormats.BIN
                     or ExportSettings.file_format == 'glb'):
                 single_buffer = Buffer.instances[0]
                 buffer_end = len(single_buffer)
                 single_buffer.byte_str += img_bytes
                 self.buffer_view = BufferView(single_buffer, buffer_end)
-                
+
                 # 4-byte-aligned
                 aligned_len = (len(img_bytes) + 3) & ~3
                 for i in range(aligned_len - len(img_bytes)):
                     single_buffer.byte_str += b'0'
-                    
+
         if (ExportSettings.file_format == 'gltf' and
                 ExportSettings.resource_format == ResourceFormats.EMBEDDED):
             self.uri = "data:application/octet-stream;base64," + base64.b64encode(img_bytes).decode("latin-1")
-    
+
     def to_json(self):
         img_def = {'mimeType' : self.mime_type}
         if self.uri:
@@ -960,39 +997,39 @@ class Image(ExportItem):
         else:
             img_def['bufferView'] = self.buffer_view.index
         return img_def
-    
+
 class Texture(ExportItem):
     '''Needs to be added to textures list and it's material'''
     instances = []
     image = None
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, image):
         self.image = image
         super(Texture, self).__init__(name=image.name)
         self.index = len(Texture.instances)
         Texture.instances.append(self)
-    
+
     def to_json(self):
         return {'source':self.image.index}
 
 class Sampler(ExportItem):
     def __init__(name=None):
         super(Sampler, self).__init__(name=name)
-        
-    
+
+
 class Buffer(ExportItem):
     instances = []
     byte_str = b""
     uri = ''
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, name=None):
         super(Buffer, self).__init__(name=name)
         self.index = len(Buffer.instances)
@@ -1000,10 +1037,10 @@ class Buffer(ExportItem):
         if (ExportSettings.file_format == 'gltf'
                 and ExportSettings.resource_format == ResourceFormats.BIN):
             self.uri = ExportSettings.out_bin
-    
+
     def __len__(self):
         return len(self.byte_str)
-    
+
     def append_data(self, data, type_):
         pack_type = '<' + type_
         packed_data = []
@@ -1017,7 +1054,7 @@ class Buffer(ExportItem):
         aligned_len = (len(self.byte_str) + 3) & ~3
         for i in range(aligned_len - len(self.byte_str)):
             self.byte_str += b'0'
-    
+
     def to_json(self):
         buffer_def = {"byteLength" : len(self)}
         if self.uri and ExportSettings.resource_format == ResourceFormats.BIN:
@@ -1033,11 +1070,11 @@ class BufferView(ExportItem):
     byte_offset = None
     byte_length = None
     target = None
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, buffer, byte_offset, target=None, name=None):
         super(BufferView, self).__init__(name=name)
         self.index = len(BufferView.instances)
@@ -1046,7 +1083,7 @@ class BufferView(ExportItem):
         self.byte_offset = byte_offset
         self.byte_length = len(buffer) - byte_offset
         self.target = target
-        
+
     def to_json(self):
         buffer_view_def = {
           "buffer" : self.buffer.index,
@@ -1055,7 +1092,7 @@ class BufferView(ExportItem):
         }
         if self.target:
             buffer_view_def['target'] = self.target
-            
+
         return buffer_view_def
 
 
@@ -1086,11 +1123,11 @@ class Accessor(ExportItem):
         ComponentTypes.UINT:"I", # unsigned int
         ComponentTypes.FLOAT:"f"  # float
     }
-    
+
     @classmethod
     def set_defaults(cls):
         cls.instances = []
-    
+
     def __init__(self, data, type_, component_type, target, buffer, name=None):
         super(Accessor, self).__init__(name=name)
         self.index = len(Accessor.instances)
@@ -1099,11 +1136,11 @@ class Accessor(ExportItem):
         self.component_type = component_type
         self.type_= type_
         byte_code = self.component_type_codes[component_type]*self.type_codes[type_]
-        
+
         buffer_end = len(buffer)
         buffer.append_data(self.src_data, byte_code)
         self.buffer_view = BufferView(buffer, buffer_end, target)
-        
+
     def to_json(self):
         accessor_def = {
           "bufferView" : self.buffer_view.index,
